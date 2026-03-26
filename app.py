@@ -1,62 +1,80 @@
 import os
-from flask import Flask, render_template, request, jsonify
-from openai import OpenAI
 import httpx
+from flask import Flask, request, render_template_string
+from openai import OpenAI
 
 app = Flask(__name__)
 
-# Nastavení klienta podle tvých podkladů
+# Inicializace klienta podle návodu Kurim AI (verify=False je klíčové)
 client = OpenAI(
-    api_key=os.environ.get("OPENAI_API_KEY", "tvuj-fallback-klic"),
+    api_key=os.environ.get("OPENAI_API_KEY", "tvuj-klic-bude-doplnen-serverem"),
     base_url=os.environ.get("OPENAI_BASE_URL", "https://kurim.ithope.eu/v1"),
-    http_client=httpx.Client(verify=False) # Ignoruje SSL certifikát podle návodu
+    http_client=httpx.Client(verify=False)
 )
 
-@app.route("/")
+# Vzhled stránky s automatickým přepínáním Dark/Light modu
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <title>Kurim AI Asistent</title>
+    <style>
+        /* Společná nastavení */
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; line-height: 1.5; }
+        input[type="text"] { width: 75%; padding: 10px; font-size: 16px; border-radius: 4px; }
+        button { padding: 10px 15px; font-size: 16px; border: none; border-radius: 4px; cursor: pointer; }
+        .odpoved { margin-top: 20px; padding: 15px; border-radius: 4px; border-left: 5px solid; white-space: pre-wrap; }
+
+        /* Nastavení pro LIGHT MODE (pokud nemáš nastavený dark mode v OS) */
+        body { background-color: #ffffff; color: #333333; }
+        input[type="text"] { border: 1px solid #cccccc; background-color: #ffffff; color: #333333; }
+        button { background-color: #007bff; color: white; }
+        button:hover { background-color: #0056b3; }
+        .odpoved { background: #f8f9fa; border-left-color: #007bff; color: #333333; border: 1px solid #e1e1e1; }
+
+        /* Nastavení pro DARK MODE (automaticky se aktivuje, pokud ho máš v OS) */
+        @media (prefers-color-scheme: dark) {
+            body { background-color: #1a1a1a; color: #e0e0e0; }
+            input[type="text"] { border: 1px solid #444444; background-color: #2b2b2b; color: #e0e0e0; }
+            button { background-color: #1e88e5; color: white; }
+            button:hover { background-color: #1565c0; }
+            .odpoved { background-color: #262626; border-left-color: #1e88e5; color: #e0e0e0; border: 1px solid #3d3d3d; }
+            ::placeholder { color: #888888; }
+        }
+    </style>
+</head>
+<body>
+    <h1>Můj Kurim AI Asistent 🤖🌑</h1>
+    <form method="POST">
+        <input type="text" name="dotaz" placeholder="Zeptej se na cokoliv..." required autofocus>
+        <button type="submit">Odeslat</button>
+    </form>
+    {% if odpoved %}
+        <div class="odpoved">{{ odpoved }}</div>
+    {% endif %}
+</body>
+</html>
+"""
+
+@app.route("/", methods=["GET", "POST"])
 def index():
-    return """
-    <html>
-        <head><title>Kurim AI Sample</title></head>
-        <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto;">
-            <h2>Kurim AI Chat</h2>
-            <input type="text" id="user_input" style="width: 80%; padding: 10px;" placeholder="Zeptej se na něco...">
-            <button onclick="askAI()" style="padding: 10px;">Odeslat</button>
-            <div id="response" style="margin-top: 20px; white-space: pre-wrap; border-top: 1px solid #ccc; padding-top: 10px;"></div>
-
-            <script>
-                async function askAI() {
-                    const input = document.getElementById('user_input').value;
-                    const resDiv = document.getElementById('response');
-                    resDiv.innerText = 'Přemýšlím...';
-                    
-                    const response = await fetch('/ask', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({prompt: input})
-                    });
-                    const data = await response.json();
-                    resDiv.innerText = data.answer;
-                }
-            </script>
-        </body>
-    </html>
-    """
-
-@app.route("/ask", methods=["POST"])
-def ask():
-    user_prompt = request.json.get("prompt")
-    try:
-        completion = client.chat.completions.create(
-            model="gemma3:27b",
-            messages=[{"role": "user", "content": user_prompt}]
-        )
-        answer = completion.choices[0].message.content
-    except Exception as e:
-        answer = f"Chyba: {str(e)}"
-    
-    return jsonify({"answer": answer})
+    odpoved = ""
+    if request.method == "POST":
+        dotaz = request.form.get("dotaz")
+        try:
+            # Komunikace s Kurim AI modelem gemma3:27b
+            ai_resp = client.chat.completions.create(
+                model="gemma3:27b",
+                messages=[{"role": "user", "content": dotaz}]
+            )
+            odpoved = ai_resp.choices[0].message.content
+        except Exception as e:
+            odpoved = f"Došlo k chybě při komunikaci s AI: {e}"
+            
+    return render_template_string(HTML_TEMPLATE, odpoved=odpoved)
 
 if __name__ == "__main__":
-    # Port z proměnné prostředí, jinak 5000
+    # Server Kurim AI vyžaduje, aby aplikace běžela na portu z proměnné prostředí PORT
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
