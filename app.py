@@ -13,9 +13,8 @@ load_dotenv()
 # 2. INICIALIZACE FLASKU (Tímto se definuje 'app', musí to být nahoře!)
 app = Flask(__name__)
 
-# 3. NASTAVENÍ CEST A KLIENTŮ
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, 'knihovna.db')
+# Použijeme složku /tmp, kde má Docker vždy právo zápisu
+DB_PATH = '/tmp/knihovna.db'
 
 client = OpenAI(
     api_key=os.environ.get("OPENAI_API_KEY"),
