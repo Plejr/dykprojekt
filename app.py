@@ -22,102 +22,98 @@ def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
 def init_db():
+    """Vytvoří tabulky pro uživatele i pro globální katalog manhwa."""
     for i in range(20):
         try:
             conn = get_db_connection()
             c = conn.cursor()
+            # Tabulka pro historii uživatelů
             c.execute('''CREATE TABLE IF NOT EXISTS manhwa 
                          (id SERIAL PRIMARY KEY, username TEXT, title TEXT, score INTEGER)''')
+            # Tabulka pro stažený katalog z internetu
+            c.execute('''CREATE TABLE IF NOT EXISTS manhwa_catalog 
+                         (id SERIAL PRIMARY KEY, title TEXT UNIQUE, synopsis TEXT)''')
             conn.commit()
             conn.close()
             return
         except Exception:
             time.sleep(2)
 
-# 2. MODERNÍ MOBILE-FRIENDLY HTML + JS
+def refresh_catalog_if_needed():
+    """Pokud je v katalogu málo dat, stáhne nové z Jikan API a uloží je do DB."""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM manhwa_catalog")
+    count = c.fetchone()[0]
+    
+    if count < 50:
+        try:
+            # Stáhneme top manhwy (strana 1 a 2)
+            for page in [1, 2]:
+                res = requests.get(f"https://api.jikan.moe/v4/top/manga?type=manhwa&page={page}", timeout=10)
+                items = res.json().get('data', [])
+                for item in items:
+                    title = item.get('title')
+                    synopsis = item.get('synopsis', 'Popis chybí.')
+                    # INSERT IGNORE ekvivalent v Postgresu
+                    c.execute("INSERT INTO manhwa_catalog (title, synopsis) VALUES (%s, %s) ON CONFLICT (title) DO NOTHING", (title, synopsis))
+            conn.commit()
+        except Exception as e:
+            print(f"Chyba při plnění katalogu: {e}")
+    conn.close()
+
+# --- HTML ŠABLONA (zůstává stejná jako v minulé verzi) ---
 HTML_LAYOUT = """
 <!DOCTYPE html>
 <html lang="cs">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Manhwa AI Manager</title>
+    <title>Manhwa AI Local Manager</title>
     <style>
         :root { --primary: #007bff; --success: #28a745; --bg: #0c0c0c; --card: #161616; --text: #eee; }
-        body { font-family: 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 15px; }
+        body { font-family: sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 15px; }
         .container { max-width: 900px; margin: auto; }
-        h1 { text-align: center; color: var(--primary); font-size: 2rem; margin-bottom: 20px; }
-        
-        /* Grid system pro mobily */
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
         @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
-        
-        .box { background: var(--card); padding: 20px; border-radius: 12px; border: 1px solid #333; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
-        h3 { margin-top: 0; border-left: 4px solid var(--primary); padding-left: 10px; font-size: 1.1rem; }
-        
-        input, button { width: 100%; padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #444; box-sizing: border-box; font-size: 1rem; }
-        input { background: #222; color: white; }
-        button { background: var(--primary); color: white; border: none; font-weight: bold; cursor: pointer; transition: 0.2s; }
-        button:active { transform: scale(0.98); }
-        
+        .box { background: var(--card); padding: 20px; border-radius: 12px; border: 1px solid #333; margin-bottom: 20px; }
+        input, button { width: 100%; padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #444; box-sizing: border-box; }
+        button { background: var(--primary); color: white; border: none; font-weight: bold; cursor: pointer; }
         .btn-rec { background: var(--success); }
-        
-        /* Historie Tabulka */
-        .table-wrapper { overflow-x: auto; margin-top: 15px; }
-        table { width: 100%; border-collapse: collapse; min-width: 400px; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #333; }
-        th { color: var(--primary); font-size: 0.8rem; text-transform: uppercase; }
-        .score { background: var(--success); padding: 2px 8px; border-radius: 10px; font-size: 0.9rem; }
-        
-        /* AI Doporučení sekce */
-        #ai-result { margin-top: 15px; padding: 15px; background: #1e291e; border-left: 4px solid var(--success); display: none; white-space: pre-wrap; font-size: 0.95rem; }
-        .loading { color: #888; font-style: italic; display: none; }
+        #ai-result { margin-top: 15px; padding: 15px; background: #1e291e; border-left: 4px solid var(--success); display: none; white-space: pre-wrap; }
+        .stats { font-size: 0.8rem; color: #888; text-align: center; margin-bottom: 10px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📚 Manhwa AI</h1>
+        <h1>📚 Manhwa Database AI</h1>
+        <p class="stats">V lokální databázi je uloženo: <strong>{{ catalog_count }}</strong> titulů</p>
         
         <div class="grid">
-            <!-- Přidávání -->
             <div class="box">
-                <h3>➕ Nový záznam</h3>
+                <h3>➕ Moje historie</h3>
                 <form action="/add" method="POST">
-                    <input type="text" name="user" placeholder="Jméno (např. martin)" required>
-                    <input type="text" name="title" placeholder="Název manhwy" required>
-                    <input type="number" name="score" min="1" max="10" placeholder="Hodnocení (1-10)" required>
-                    <button type="submit">Uložit do DB</button>
+                    <input type="text" name="user" placeholder="Jméno" required>
+                    <input type="text" name="title" placeholder="Název" required>
+                    <input type="number" name="score" min="1" max="10" placeholder="Skóre" required>
+                    <button type="submit">Uložit</button>
                 </form>
             </div>
-            
-            <!-- AI Doporučení -->
             <div class="box">
-                <h3>✨ AI Doporučení</h3>
-                <input type="text" id="rec-user" placeholder="Zadej své jméno">
-                <button onclick="getRecommendation()" class="btn-rec">Najít nové pecky</button>
-                <div id="loading" class="loading">AI přemýšlí... (může to trvat 10s)</div>
+                <h3>✨ AI Doporučení z DB</h3>
+                <input type="text" id="rec-user" placeholder="Tvé jméno">
+                <button onclick="getRecommendation()" class="btn-rec">Doporučit z mého katalogu</button>
                 <div id="ai-result"></div>
             </div>
         </div>
 
-        <div class="box" style="margin-top:20px;">
-            <h3>📜 Historie čtení</h3>
-            <div class="table-wrapper">
-                <table>
-                    <thead>
-                        <tr><th>Kdo</th><th>Titul</th><th>Skóre</th></tr>
-                    </thead>
-                    <tbody>
-                        {% for item in library %}
-                        <tr>
-                            <td>{{ item[1] }}</td>
-                            <td>{{ item[2] }}</td>
-                            <td><span class="score">{{ item[3] }}/10</span></td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
+        <div class="box">
+            <h3>📜 Poslední záznamy</h3>
+            <table style="width:100%; border-collapse: collapse;">
+                {% for item in library %}
+                <tr><td style="padding:8px; border-bottom:1px solid #333;">{{ item[1] }}: <strong>{{ item[2] }}</strong> ({{ item[3] }}/10)</td></tr>
+                {% endfor %}
+            </table>
         </div>
     </div>
 
@@ -125,30 +121,13 @@ HTML_LAYOUT = """
         async function getRecommendation() {
             const user = document.getElementById('rec-user').value.trim();
             const resultDiv = document.getElementById('ai-result');
-            const loadingDiv = document.getElementById('loading');
+            if(!user) return;
+            resultDiv.style.display = 'block';
+            resultDiv.innerText = "AI prohledává tvou databázi...";
             
-            if(!user) { alert("Zadej jméno!"); return; }
-            
-            loadingDiv.style.display = 'block';
-            resultDiv.style.display = 'none';
-            
-            try {
-                const response = await fetch(`/api/recommend?user=${encodeURIComponent(user)}`);
-                const data = await response.json();
-                
-                loadingDiv.style.display = 'none';
-                resultDiv.style.display = 'block';
-                
-                if(data.error) {
-                    resultDiv.innerHTML = `<span style="color:#ff4444">${data.error}</span>`;
-                } else {
-                    resultDiv.innerText = data.recommendation;
-                }
-            } catch (e) {
-                loadingDiv.style.display = 'none';
-                resultDiv.style.display = 'block';
-                resultDiv.innerText = "Chyba při spojení se serverem.";
-            }
+            const response = await fetch(`/api/recommend?user=${encodeURIComponent(user)}`);
+            const data = await response.json();
+            resultDiv.innerText = data.error || data.recommendation;
         }
     </script>
 </body>
@@ -157,12 +136,15 @@ HTML_LAYOUT = """
 
 @app.route('/')
 def home():
+    refresh_catalog_if_needed() # Zkontroluje/naplní katalog při návštěvě
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT * FROM manhwa ORDER BY id DESC")
+    c.execute("SELECT * FROM manhwa ORDER BY id DESC LIMIT 10")
     library = c.fetchall()
+    c.execute("SELECT COUNT(*) FROM manhwa_catalog")
+    catalog_count = c.fetchone()[0]
     conn.close()
-    return render_template_string(HTML_LAYOUT, library=library)
+    return render_template_string(HTML_LAYOUT, library=library, catalog_count=catalog_count)
 
 @app.route('/add', methods=['POST'])
 def add():
@@ -176,29 +158,33 @@ def add():
     conn.close()
     return "<script>window.location.href='/';</script>"
 
-# NOVÁ API CESTA PRO AJAX
 @app.route('/api/recommend')
 def api_recommend():
     user = request.args.get('user').strip().lower()
     conn = get_db_connection()
     c = conn.cursor()
+    
+    # 1. Co uživatel četl
     c.execute("SELECT title FROM manhwa WHERE username = %s", (user,))
     read = [r[0].lower() for r in c.fetchall()]
+    
+    # 2. Co má rád
     c.execute("SELECT title FROM manhwa WHERE username = %s AND score >= 8", (user,))
     favs = [r[0] for r in c.fetchall()]
+    
+    # 3. Náhodný výběr kandidátů z NAŠÍ databáze (katalogu), které ještě nečetl
+    c.execute("SELECT title, synopsis FROM manhwa_catalog ORDER BY RANDOM() LIMIT 20")
+    db_items = c.fetchall()
     conn.close()
 
     if not favs:
-        return jsonify({"error": "Nemáš v DB oblíbené tituly se skóre 8+. Přidej je nejdřív!"})
+        return jsonify({"error": "Musíš nejdřív přidat aspoň jednu oblíbenou věc (8+ bodů)."})
+
+    candidates = [f"{m[0]}: {m[1][:200]}" for m in db_items if m[0].lower() not in read]
 
     try:
-        res = requests.get(f"https://api.jikan.moe/v4/top/manga?type=manhwa&page={random.randint(1,3)}", timeout=10)
-        data = res.json().get('data', [])
-        candidates = [f"{m['title']}: {m.get('synopsis','')[:200]}" for m in data if m['title'].lower() not in read]
-        
-        prompt = f"Uživatel {user} má rád {favs}. Vyber 3 z tohoto seznamu: {candidates[:15]}. Odpověz česky, Formát: Název - Proč se mu bude líbit."
+        prompt = f"Jsi expert. Uživatel {user} má rád {favs}. Z naší lokální DB jsem vybral tyto kandidáty: {candidates}. Vyber 3 nejlepší a česky napiš: Název - Proč."
         ai_res = client.chat.completions.create(model="gemma3:27b", messages=[{"role": "user", "content": prompt}])
-        
         return jsonify({"recommendation": ai_res.choices[0].message.content})
     except Exception as e:
         return jsonify({"error": str(e)})
