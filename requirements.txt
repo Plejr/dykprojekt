@@ -1,5 +1,6 @@
-Flask==3.0.2
-openai==1.13.3
-httpx==0.27.0
-requests==2.31.0
-python-dotenv==1.0.1
+flask
+requests
+httpx
+openai
+python-dotenv
+psycopg2-binary
