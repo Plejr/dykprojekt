@@ -24,7 +24,7 @@ def get_db_connection():
 
 def init_db():
     """Čeká na start DB a vytvoří tabulku."""
-    for i in range(10):
+    for i in range(20):
         try:
             conn = get_db_connection()
             c = conn.cursor()
