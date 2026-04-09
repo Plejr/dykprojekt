@@ -1,8 +1,9 @@
 import os
-import sqlite3
 import requests
 import httpx
 import random
+import time
+import psycopg2
 from flask import Flask, request, render_template_string
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -10,11 +11,7 @@ from dotenv import load_dotenv
 # 1. NAČTENÍ KONFIGURACE
 load_dotenv()
 
-# 2. INICIALIZACE FLASKU (Tímto se definuje 'app', musí to být nahoře!)
 app = Flask(__name__)
-
-# Použijeme složku /tmp, kde má Docker vždy právo zápisu
-DB_PATH = '/tmp/knihovna.db'
 
 client = OpenAI(
     api_key=os.environ.get("OPENAI_API_KEY"),
@@ -22,18 +19,40 @@ client = OpenAI(
     http_client=httpx.Client(verify=False)
 )
 
+# 2. KONFIGURACE DATABÁZE (čte z docker-compose)
+DB_HOST = os.environ.get("DB_HOST", "db")
+DB_PORT = os.environ.get("DB_PORT", "5432")
+DB_USER = os.environ.get("DB_USER", "postgres")
+DB_PASS = os.environ.get("DB_PASS", "postgres")
+DB_NAME = os.environ.get("DB_NAME", "manhwadb")
+
+def get_db_connection():
+    return psycopg2.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        user=DB_USER,
+        password=DB_PASS,
+        dbname=DB_NAME
+    )
+
 def init_db():
-    """Vytvoří databázi, pokud neexistuje."""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS manhwa 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, user TEXT, title TEXT, score INTEGER)''')
-    conn.commit()
-    conn.close()
+    """Vytvoří databázi, pokud neexistuje. Má v sobě retry mechanismus pro čekání na start Postgresu."""
+    for i in range(5):
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            # PostgreSQL používá SERIAL místo AUTOINCREMENT
+            c.execute('''CREATE TABLE IF NOT EXISTS manhwa 
+                         (id SERIAL PRIMARY KEY, username TEXT, title TEXT, score INTEGER)''')
+            conn.commit()
+            conn.close()
+            print("Databáze úspěšně připojena a inicializována.")
+            return
+        except Exception as e:
+            print(f"Čekám na start databáze... (pokus {i+1}/5)")
+            time.sleep(3)
 
-init_db()
-
-# 4. HTML ŠABLONA (Přímo v kódu pro maximální spolehlivost)
+# 3. HTML ŠABLONA
 HTML_LAYOUT = """
 <!DOCTYPE html>
 <html lang="cs">
@@ -102,10 +121,10 @@ HTML_LAYOUT = """
 </html>
 """
 
-# 5. CESTY (ROUTES)
+# 4. CESTY (ROUTES)
 @app.route('/')
 def home():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
     c.execute("SELECT * FROM manhwa ORDER BY id DESC")
     library = c.fetchall()
@@ -114,38 +133,37 @@ def home():
 
 @app.route('/add', methods=['POST'])
 def add():
-    user = request.form.get('user').strip().lower()
+    username = request.form.get('user').strip().lower()
     title = request.form.get('title').strip()
     score = request.form.get('score')
     
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
-    c.execute("INSERT INTO manhwa (user, title, score) VALUES (?, ?, ?)", (user, title, int(score)))
+    # Převedeno na %s syntaxi pro Postgres
+    c.execute("INSERT INTO manhwa (username, title, score) VALUES (%s, %s, %s)", (username, title, int(score)))
     conn.commit()
     conn.close()
     return "<script>window.location.href='/';</script>"
 
 @app.route('/recommend', methods=['GET'])
 def recommend():
-    user = request.args.get('user').strip().lower()
+    username = request.args.get('user').strip().lower()
     
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     c = conn.cursor()
-    # Co uživatel četl
-    c.execute("SELECT title FROM manhwa WHERE user = ?", (user,))
+    c.execute("SELECT title FROM manhwa WHERE username = %s", (username,))
     already_read = [row[0].lower().strip() for row in c.fetchall()]
-    # Co má rád (pro kontext AI)
-    c.execute("SELECT title FROM manhwa WHERE user = ? AND score >= 8", (user,))
+    
+    c.execute("SELECT title FROM manhwa WHERE username = %s AND score >= 8", (username,))
     favs = [row[0] for row in c.fetchall()]
     conn.close()
 
     if not favs:
-        return f"Uživatel {user} nemá v databázi žádné oblíbené (8/10+). Přidej něco pořádného! <br><a href='/'>Zpět</a>"
+        return f"Uživatel {username} nemá v databázi žádné oblíbené (8/10+). Přidej něco pořádného! <br><a href='/'>Zpět</a>"
 
     try:
-        # Získání dat z Jikan API (Top Manhwa)
+        # Získání a stažení dat z Jikan API (Top Manhwa)
         headers = {'User-Agent': 'Mozilla/5.0'}
-        # Zkusíme náhodnou stránku 1-5, aby se seznam neustále měnil
         random_page = random.randint(1, 5)
         api_url = f"https://api.jikan.moe/v4/top/manga?type=manhwa&page={random_page}"
         
@@ -156,7 +174,7 @@ def recommend():
 
         data = response_api.json().get('data', [])
         
-        # FILTROVÁNÍ: Do seznamu pro AI pošleme jen to, co v DB vůbec není
+        # Filtrování pro AI
         candidates = []
         for m in data:
             t = m.get('title', '')
@@ -167,9 +185,8 @@ def recommend():
         if not candidates:
             return "Na této stránce API jsou samé věci, které už znáš. Zkus kliknout znovu! <br><a href='/'>Zpět</a>"
 
-        # PŘÍSNÝ PROMPT PRO AI
         prompt = f"""
-        Jsi expert na manhwu. Uživatel {user} má velmi rád: {', '.join(favs)}.
+        Jsi expert na manhwu. Uživatel {username} má velmi rád: {', '.join(favs)}.
         
         TVŮJ ÚKOL:
         Vyber 3 tituly z níže uvedeného seznamu, které by ho mohly bavit. 
@@ -187,7 +204,7 @@ def recommend():
         ai_res = client.chat.completions.create(
             model="gemma3:27b",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.1  # Velmi nízká teplota zabrání halucinacím
+            temperature=0.1 
         )
 
         content = ai_res.choices[0].message.content
@@ -206,6 +223,7 @@ def recommend():
     except Exception as e:
         return f"Nastala chyba: {str(e)}. Zkus to znovu. <br><a href='/'>Zpět</a>"
 
-# 6. SPUŠTĚNÍ APLIKACE
+# 5. SPUŠTĚNÍ APLIKACE
 if __name__ == '__main__':
+    init_db() # Pokusí se vytvořit tabulky při startu
     app.run(host="0.0.0.0", port=5000, debug=True)
