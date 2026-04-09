@@ -87,8 +87,6 @@ HTML_LAYOUT = """
 <body>
     <div class="container">
         <h1>📚 Manhwa Database AI</h1>
-        <p class="stats">V lokální databázi je uloženo: <strong>{{ catalog_count }}</strong> titulů</p>
-        
         <div class="grid">
             <div class="box">
                 <h3>➕ Moje historie</h3>
