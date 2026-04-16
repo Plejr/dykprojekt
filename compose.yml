@@ -4,7 +4,6 @@ services:
     ports:
       - "5000"
     environment:
-      # Upraveno na uživatele postgres
       - DATABASE_URL=postgresql://postgres:heslo123@db:5432/manhwadb
       - OPENAI_API_KEY=sk-oPp-xXI9_eJllyfGQgf0Pw
       - OPENAI_BASE_URL=https://kurim.ithope.eu/v1
@@ -18,5 +17,5 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=heslo123
       - POSTGRES_DB=manhwadb
-      - PGDATA=/data/pgdata_new  # Čistá složka pro data
+      - PGDATA=/data/pgdata_new
     restart: always
