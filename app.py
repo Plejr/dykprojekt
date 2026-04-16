@@ -10,17 +10,16 @@ from openai import OpenAI
 
 app = Flask(__name__)
 
-# 1. KONFIGURACE AI
+
 client = OpenAI(
     api_key=os.environ.get("OPENAI_API_KEY"),
     base_url=os.environ.get("OPENAI_BASE_URL", "https://kurim.ithope.eu/v1"),
     http_client=httpx.Client(verify=False)
 )
 
-# DATABÁZE
-# Postgres v /data pro trvalý katalog (aby se neplýtvalo API)
+
 POSTGRES_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:heslo123@db:5432/manhwadb")
-# SQLite v /tmp pro DOČASNOU historii (smaže se po restartu)
+
 TEMP_DB_PATH = "/tmp/user_history.db"
 
 def get_pg_conn():
@@ -31,7 +30,7 @@ def get_temp_conn():
 
 def init_db():
     """Inicializuje obě databáze."""
-    # Inicializace trvalého katalogu v Postgresu
+ 
     for i in range(20):
         try:
             conn = get_pg_conn()
@@ -46,7 +45,7 @@ def init_db():
             print(f"Čekám na Postgres... {e}")
             time.sleep(2)
             
-    # Inicializace dočasné historie v SQLite
+
     conn = get_temp_conn()
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS manhwa 
@@ -75,7 +74,7 @@ def refresh_catalog_if_needed():
             print(f"Chyba při plnění katalogu: {e}")
     conn.close()
 
-# 2. KOMPLETNÍ HTML ŠABLONA
+
 HTML_LAYOUT = """
 <!DOCTYPE html>
 <html lang="cs">
@@ -197,14 +196,14 @@ HTML_LAYOUT = """
 @app.route('/')
 def home():
     refresh_catalog_if_needed()
-    # Čtení z DOČASNÉ SQLite
+  
     conn = get_temp_conn()
     c = conn.cursor()
     c.execute("SELECT * FROM manhwa ORDER BY id DESC")
     library = c.fetchall()
     conn.close()
     
-    # Čtení počtu z TRVALÉHO Postgresu
+   
     pg_conn = get_pg_conn()
     pg_c = pg_conn.cursor()
     pg_c.execute("SELECT COUNT(*) FROM manhwa_catalog")
@@ -218,7 +217,7 @@ def add():
     user = request.form.get('user').strip().lower()
     title = request.form.get('title').strip()
     score = request.form.get('score')
-    # Zápis do DOČASNÉ SQLite
+   
     conn = get_temp_conn()
     c = conn.cursor()
     c.execute("INSERT INTO manhwa (username, title, score) VALUES (?, ?, ?)", (user, title, int(score)))
@@ -230,7 +229,7 @@ def add():
 def api_recommend():
     user = request.args.get('user').strip().lower()
     
-    # 1. Zjistíme z dočasné DB, co uživatel četl
+  
     conn = get_temp_conn()
     c = conn.cursor()
     c.execute("SELECT title FROM manhwa WHERE username = ?", (user,))
@@ -242,7 +241,7 @@ def api_recommend():
     if not favs:
         return jsonify({"error": "Musíš mít v dočasné historii aspoň jednu věc s hodnocením 8+."})
 
-    # 2. Vybereme náhodné kandidáty z trvalé DB
+   
     pg_conn = get_pg_conn()
     pg_c = pg_conn.cursor()
     pg_c.execute("SELECT title, synopsis FROM manhwa_catalog ORDER BY RANDOM() LIMIT 20")
